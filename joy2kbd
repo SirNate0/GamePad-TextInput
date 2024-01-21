@@ -5,6 +5,10 @@ from evdev import InputDevice, UInput, ecodes as E
 from evdev.util import categorize
 import string
 
+# termcolor is also good option for color, but I want to try this one which has a nice syntax
+# "String" | blue & bold
+from plumbum.colors import red, blue, bold, do_nothing
+
 dev = '/dev/input/event16'
 
 '''
@@ -37,6 +41,11 @@ KeyMaps = {
     #E.BTN_SELECT : E.KEY_ESC,
 }
 
+def key2str(k):
+    if isinstance(k,str):
+        return k
+    return E.KEY[k][len('KEY_'):]
+
 TileMaps = [[# N   W   S   E
             ["'",'a','b','c'],      ['!','d', 'e', 'f'],            ["?", "g", 'h', 'i'],
             ['(', 'j', 'k', 'l'],   ['bkspace', 'm', 'space', 'n'], [')', 'o', 'p', 'q'],
@@ -57,6 +66,8 @@ def debug(*a,**k): pass
 SHIFT = False
 TOGGLE = False
 DIRECTION = [0,0] # -1,0,1 for each
+
+KEYSTATES = {} # Track keystates for UI
 
 # "Enums" for whether we need to set shift or remove it.
 LOWER = object()
@@ -113,12 +124,14 @@ def str2key(s):
     else:
         raise KeyError("Unknown key {s:r}")
     
-        
+def dir2idx():
+    x,y = DIRECTION
+    di = 3*(y+1) + (x+1)
+    return di
 
 def dotile(ui,code,value):
     i = {'TILE%d'%i:i for i in range(4)}[code]
-    x,y = DIRECTION
-    di = 3*(y+1) + (x+1)
+    di = dir2idx()
     ti = int(TOGGLE)
     key,shift = str2key(TileMaps[ti][di][i])
     if shift is EITHER or (shift is UPPER and SHIFT) or (shift is LOWER and not SHIFT):
@@ -137,7 +150,40 @@ def dotile(ui,code,value):
     else:
         assert False, "Unreachable"
             
+            
+def clearscreen():
+    print(chr(27) + "[2J") # Supposedly faster than calling clear
     
+def renderoptions():
+    clearscreen()
+    # Print buttons
+    head = []
+    for b in [E.BTN_TL,E.BTN_TL2,E.BTN_TR2,E.BTN_TR]:
+        k = KeyMaps[b]
+        if globals().get(k,False):
+            head.append(k | red & bold)
+        elif KEYSTATES.get(k,False):
+            head.append(key2str(k) | (red & bold))
+        else:
+            head.append(key2str(k))
+    print('\t|\t'.join(head))
+    active = dir2idx()
+    rows = []
+    for y in range(3):
+        rows.extend([['-'*100],[],[],[]])
+        for x in range(3):
+            di = 3*y+x
+            if di == active:
+                filt = blue & bold
+            else:
+                filt = do_nothing
+            rows[-3].extend(['',TileMaps[int(TOGGLE)][di][0] | filt,''])
+            rows[-2].extend([TileMaps[int(TOGGLE)][di][1] | filt,'',TileMaps[int(TOGGLE)][di][3] | filt])
+            rows[-1].extend(['',TileMaps[int(TOGGLE)][di][2] | filt,''])
+    for r in rows:
+        print('\t|\t'.join(r))
+    
+        
 
 with UInput() as ui:
   try:
@@ -163,16 +209,17 @@ with UInput() as ui:
                 kc = E.ecodes[kc]
                 if kc in KeyMaps:
                     res = KeyMaps[kc]
-                    if res == 'TOGGLE':
+                    if not isinstance(res,str):
+                        ui.write(E.EV_KEY, res, evt.keystate)  
+                        KEYSTATES[res] = evt.keystate
+                        ui.syn()
+                    elif res == 'TOGGLE':
                         TOGGLE = evt.keystate
                     elif res.startswith('TILE'):
                         dotile(ui,res,evt.keystate)
                     elif res == 'SHIFT':
                         SHIFT = evt.keystate
                         ui.write(E.EV_KEY, E.KEY_LEFTSHIFT, evt.keystate)  
-                        ui.syn()
-                    else:
-                        ui.write(E.EV_KEY, res, evt.keystate)  
                         ui.syn()
         elif isinstance(evt, events.AbsEvent):
             # code is which joystick, value is the axis value
@@ -182,6 +229,7 @@ with UInput() as ui:
                 DIRECTION[0] = -1 if event.value < -DEADZONE else 1 if event.value > DEADZONE else 0
             if event.code == E.ABS_Y:
                 DIRECTION[1] = -1 if event.value < -DEADZONE else 1 if event.value > DEADZONE else 0
+        renderoptions()
             
             
   finally:
