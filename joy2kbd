@@ -1,0 +1,189 @@
+#!/home/nathan/Projects/gamepad-textinput/venv/bin/python
+
+import evdev.events as events
+from evdev import InputDevice, UInput, ecodes as E
+from evdev.util import categorize
+import string
+
+dev = '/dev/input/event16'
+
+'''
+TileMaps map an axis and button pair to a large set of keys
+    Each inner set of 4 corresponds to the 4 face buttons
+    The next (set of 9) correspond to the 9 directions on a DPAD (though we use an axis)
+The KeyMaps map an individual button directly to a key, such as DPAD to arrow keys or trigger to Ctrl.
+    The 'TOGGLE' button swaps which set of TileMaps we are using.
+    If they are a 2-tuple, then they are toggled with the 'TOGGLE' button.
+    If they are a list, a sequence of keys is sent?
+'''
+KeyMaps = {
+    E.BTN_DPAD_UP : (E.KEY_UP, E.KEY_PAGEUP),
+    E.BTN_DPAD_LEFT : (E.KEY_LEFT, E.KEY_HOME),
+    E.BTN_DPAD_DOWN : (E.KEY_DOWN, E.KEY_PAGEDOWN),
+    E.BTN_DPAD_RIGHT : (E.KEY_RIGHT, E.KEY_END),
+    
+    E.BTN_TL : 'SHIFT', # We need to track Shift state to get the correct punctuation
+    E.BTN_TR : 'TOGGLE',
+    
+    E.BTN_NORTH : 'TILE0',
+    E.BTN_WEST : 'TILE1',
+    E.BTN_SOUTH : 'TILE2',
+    E.BTN_EAST : 'TILE3',
+    
+    E.BTN_TL2 : E.KEY_LEFTCTRL,
+    E.BTN_TR2 : E.KEY_LEFTALT,
+    
+    E.BTN_START : E.KEY_ENTER,
+    #E.BTN_SELECT : E.KEY_ESC,
+}
+
+TileMaps = [[# N   W   S   E
+            ["'",'a','b','c'],      ['!','d', 'e', 'f'],            ["?", "g", 'h', 'i'],
+            ['(', 'j', 'k', 'l'],   ['bkspace', 'm', 'space', 'n'], [')', 'o', 'p', 'q'],
+            [':', 'r', 's', 't'],   ['.', 'u', 'v', 'w'],           [';', 'x', 'y', 'z']
+        ],
+        [
+            ['1','2','3','4'],      ["5",'6', '7', '8'],            ['9', "0", '#', '='],
+            ['[', '{', '@', '}'],   ['del', 'esc', 'enter', 'tab'], [']', '<', '^', '>'],
+            ['"', '$', '&', ';'],   ['~', '\\', '_', '|'],          ['+', '%', '/', '*']
+        ]]
+        
+DEADZONE = 2000 # Axis deadzone in choosing direction
+
+def debug(*a,**k):print(*a,**k)
+
+def debug(*a,**k): pass
+
+SHIFT = False
+TOGGLE = False
+DIRECTION = [0,0] # -1,0,1 for each
+
+# "Enums" for whether we need to set shift or remove it.
+LOWER = object()
+UPPER = object()
+EITHER = object()
+
+def str2key(s):
+    shift_digits = ')!@#$%^&*(' # Index is digit
+    lower_punct = { # Helpful https://gist.github.com/rvaiya/be31f42049a4b5ad46666a8e120d9843
+        # or to search: print(*[e for e in E.KEY.values() if 'MIN' in e])
+        '`' : E.KEY_GRAVE,
+        '-' : E.KEY_MINUS,
+        '=' : E.KEY_EQUAL,
+        '[' : E.KEY_LEFTBRACE,
+        ']' : E.KEY_RIGHT,
+        '\\' :E.KEY_BACKSLASH,
+        ';' : E.KEY_SEMICOLON,
+        "'" : E.KEY_APOSTROPHE,
+        ',' : E.KEY_COMMA,
+        '.' : E.KEY_DOT,
+        '/' : E.KEY_SLASH
+    }
+    upper_punct = {
+        # For correct local support, see https://github.com/gvalkov/python-evdev/issues/7 or http://superuser.com/a/290149
+        '~' : E.KEY_GRAVE,
+        '_' : E.KEY_MINUS,
+        '+' : E.KEY_EQUAL,
+        '{' : E.KEY_LEFTBRACE,
+        '}' : E.KEY_RIGHT,
+        '|' :E.KEY_BACKSLASH,
+        ':' : E.KEY_SEMICOLON,
+        '"' : E.KEY_APOSTROPHE,
+        '<' : E.KEY_COMMA,
+        '>' : E.KEY_DOT,
+        '?' : E.KEY_SLASH
+    }
+    if s in string.digits:# or s in string.ascii_uppercase:
+        return E.ecodes[f'KEY_{s}'], LOWER
+    elif s in shift_digits:
+        return E.ecodes[f'KEY_{shift_digits.index(s)}'], UPPER
+    
+    elif s in string.ascii_lowercase or s in ['enter','esc','tab','space']:
+        return E.ecodes[f'KEY_{s.upper()}'], EITHER
+    elif s == 'del':
+        return E.KEY_DELETE, EITHER
+    elif s == 'bkspace':
+        return E.KEY_BACKSPACE, EITHER
+    
+    elif s in lower_punct:
+        return lower_punct[s], LOWER
+    elif s in upper_punct:
+        return upper_punct[s], UPPER
+    
+    else:
+        raise KeyError("Unknown key {s:r}")
+    
+        
+
+def dotile(ui,code,value):
+    i = {'TILE%d'%i:i for i in range(4)}[code]
+    x,y = DIRECTION
+    di = 3*(y+1) + (x+1)
+    ti = int(TOGGLE)
+    key,shift = str2key(TileMaps[ti][di][i])
+    if shift is EITHER or (shift is UPPER and SHIFT) or (shift is LOWER and not SHIFT):
+        ui.write(E.EV_KEY, key, evt.keystate)  
+        ui.syn()
+    elif shift is UPPER:
+        ui.write(E.EV_KEY, E.KEY_LEFTSHIFT, True) ; ui.syn()
+        ui.write(E.EV_KEY, key, evt.keystate) ; ui.syn()
+        ui.write(E.EV_KEY, E.KEY_LEFTSHIFT, False) ; ui.syn()
+        
+    elif shift is LOWER:
+        ui.write(E.EV_KEY, E.KEY_LEFTSHIFT, False) ; ui.syn()
+        ui.write(E.EV_KEY, key, evt.keystate) ; ui.syn()
+        ui.write(E.EV_KEY, E.KEY_LEFTSHIFT, True) ; ui.syn()
+        
+    else:
+        assert False, "Unreachable"
+            
+    
+
+with UInput() as ui:
+  try:
+    js = InputDevice(dev) 
+    debug(js.capabilities(verbose=True))
+    input_events = js.read_loop()
+    for event in input_events:
+        if event.type == E.EV_KEY:
+            debug(event,'KEY')
+        elif event.type == E.EV_ABS:
+            debug(event,'ABS')
+        else:
+            debug(event)
+        #if event.type == E.EV_KEY:
+        evt = categorize(event)
+        debug(evt)
+        if isinstance(evt, events.KeyEvent):
+            debug(evt,type(evt.keycode))
+            kcs = evt.keycode
+            if isinstance(kcs,str):
+                kcs = [kcs]
+            for kc in kcs:
+                kc = E.ecodes[kc]
+                if kc in KeyMaps:
+                    res = KeyMaps[kc]
+                    if res == 'TOGGLE':
+                        TOGGLE = evt.keystate
+                    elif res.startswith('TILE'):
+                        dotile(ui,res,evt.keystate)
+                    elif res == 'SHIFT':
+                        SHIFT = evt.keystate
+                        ui.write(E.EV_KEY, E.KEY_LEFTSHIFT, evt.keystate)  
+                        ui.syn()
+                    else:
+                        ui.write(E.EV_KEY, res, evt.keystate)  
+                        ui.syn()
+        elif isinstance(evt, events.AbsEvent):
+            # code is which joystick, value is the axis value
+            #print(evt,evt.event)
+            #debug(event.code,event.value)
+            if event.code == E.ABS_X:
+                DIRECTION[0] = -1 if event.value < -DEADZONE else 1 if event.value > DEADZONE else 0
+            if event.code == E.ABS_Y:
+                DIRECTION[1] = -1 if event.value < -DEADZONE else 1 if event.value > DEADZONE else 0
+            
+            
+  finally:
+    if 'js' in globals():
+        js.close()
