@@ -154,8 +154,25 @@ def dotile(ui,code,value):
 def clearscreen():
     print(chr(27) + "[2J") # Supposedly faster than calling clear
     
+import time
+LASTTIME = -10
+LASTSTR = ''
+    
 def renderoptions():
-    clearscreen()
+    # This does prevent most of the flickering, but if it skips the last frame of letting the stick go back 
+    # to zero, it won't update, as the event loop is only based on the joystick events.
+    if 0:
+        # Only update every 10ms at most
+        global LASTTIME
+        if time.time() < LASTTIME + 0.01:
+            return
+        LASTTIME = time.time()
+    
+    global LASTSTR
+    STR = ''
+    def print(a):
+        nonlocal STR
+        STR += f'{a}\n'
     # Print buttons
     head = []
     for b in [E.BTN_TL,E.BTN_TL2,E.BTN_TR2,E.BTN_TR]:
@@ -166,24 +183,48 @@ def renderoptions():
             head.append(key2str(k) | (red & bold))
         else:
             head.append(key2str(k))
-    print('\t|\t'.join(head))
+    if 0:
+        print('\t|\t'.join(head))
+        W=100
+    else:
+        W = 12*3+2
+        half = (len(head)-1)/2
+        S = 9
+        def just(en):
+            i,s = en
+            return s.ljust(S) if i < half else s.rjust(S) if i > half else s.center(S)
+        print('|'.join(map(just, enumerate(head))))
     active = dir2idx()
     rows = []
     for y in range(3):
-        rows.extend([['-'*100],[],[],[]])
+        rows.extend([['-'*W],[],[],[]])
         for x in range(3):
             di = 3*y+x
             if di == active:
                 filt = blue & bold
             else:
                 filt = do_nothing
-            rows[-3].extend(['',TileMaps[int(TOGGLE)][di][0] | filt,''])
-            rows[-2].extend([TileMaps[int(TOGGLE)][di][1] | filt,'',TileMaps[int(TOGGLE)][di][3] | filt])
-            rows[-1].extend(['',TileMaps[int(TOGGLE)][di][2] | filt,''])
+            # Width: 12
+            if 0:
+                rows[-3].extend(['',TileMaps[int(TOGGLE)][di][0] | filt,''])
+                rows[-2].extend([TileMaps[int(TOGGLE)][di][1] | filt,'',TileMaps[int(TOGGLE)][di][3] | filt])
+                rows[-1].extend(['',TileMaps[int(TOGGLE)][di][2] | filt,''])
+            else:
+                SINGLE = 12
+                A,B = 6,6
+                rows[-3].append(TileMaps[int(TOGGLE)][di][0].center(SINGLE) | filt)
+                rows[-2].append((TileMaps[int(TOGGLE)][di][1].ljust(A) | filt) + (TileMaps[int(TOGGLE)][di][3].rjust(B) | filt))
+                rows[-1].append(TileMaps[int(TOGGLE)][di][2].center(SINGLE) | filt)
     for r in rows:
-        print('\t|\t'.join(r))
-    
+        print('|'.join(r))
         
+    if STR != LASTSTR:
+        clearscreen()
+        from builtins import print
+        print(STR)
+        LASTSTR = STR
+    
+renderoptions()
 
 with UInput() as ui:
   try:
